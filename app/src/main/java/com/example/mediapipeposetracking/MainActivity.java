@@ -44,6 +44,7 @@ public class MainActivity extends AppCompatActivity {
     private static final String OUTPUT_VIDEO_STREAM_NAME = "output_video";
     private static final String OUTPUT_LANDMARKS_STREAM_NAME = "pose_landmarks";
 
+
    // private static final CameraHelper.CameraFacing CAMERA_FACING = CameraHelper.CameraFacing.FRONT;
     private static final CameraHelper.CameraFacing CAMERA_FACING = CameraHelper.CameraFacing.BACK;
     // Flips the camera-preview frames vertically before sending them into FrameProcessor to be
