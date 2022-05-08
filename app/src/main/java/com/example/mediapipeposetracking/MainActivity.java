@@ -1,5 +1,7 @@
 package com.example.mediapipeposetracking;
 
+import static java.util.Objects.requireNonNull;
+
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageManager.NameNotFoundException;
@@ -10,11 +12,31 @@ import androidx.appcompat.app.AppCompatActivity;
 
 import android.util.Log;
 import android.util.Size;
+import android.view.Choreographer;
+import android.view.GestureDetector;
+import android.view.MotionEvent;
+import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.TextView;
+import android.widget.Toast;
 
+import com.google.android.filament.Engine;
+import com.google.android.filament.Fence;
+import com.google.android.filament.Renderer;
+import com.google.android.filament.Scene;
+import com.google.android.filament.SwapChain;
+import com.google.android.filament.android.DisplayHelper;
+import com.google.android.filament.android.UiHelper;
+import com.google.android.filament.utils.AutomationEngine;
+import com.google.android.filament.utils.Float3;
+import com.google.android.filament.utils.KTXLoader;
+import com.google.android.filament.utils.Manipulator;
+import com.google.android.filament.utils.ModelViewer;
+import com.google.android.filament.utils.RemoteServer;
+import com.google.android.filament.utils.Utils;
 import com.google.mediapipe.formats.proto.LandmarkProto;
 import com.google.mediapipe.formats.proto.LandmarkProto.NormalizedLandmark;
 import com.google.mediapipe.formats.proto.LandmarkProto.NormalizedLandmarkList;
@@ -30,9 +52,22 @@ import com.google.mediapipe.framework.Packet;
 import com.google.mediapipe.glutil.EglManager;
 import com.google.protobuf.InvalidProtocolBufferException;
 
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+
+import java.io.Closeable;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.Buffer;
+import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
+import kotlin.io.CloseableKt;
+import kotlin.jvm.functions.Function1;
+import kotlin.jvm.internal.DefaultConstructorMarker;
+import kotlin.jvm.internal.Intrinsics;
 
 /**
  * Main activity of MediaPipe example apps.
@@ -62,7 +97,7 @@ public class MainActivity extends AppCompatActivity {
     // {@link SurfaceTexture} where the camera-preview frames can be accessed.
     private SurfaceTexture previewFrameTexture;
     // {@link SurfaceView} that displays the camera-preview frames processed by a MediaPipe graph.
-    private SurfaceView previewDisplayView;
+    private SurfaceView previewDisplayView,previewDisplayView2;
     // Creates and manages an {@link EGLContext}.
     private EglManager eglManager;
     // Sends camera-preview frames into a MediaPipe graph for processing, and displays the processed
@@ -76,11 +111,30 @@ public class MainActivity extends AppCompatActivity {
     // Handles camera access via the {@link CameraX} Jetpack support library.
     private CameraXPreviewHelper cameraHelper;
 
+    private Choreographer choreographer;
+    private final MainActivity.FrameCallback frameScheduler = new MainActivity.FrameCallback();
+    private ModelViewer modelViewer;
+    private TextView titlebarHint;
+    private final MainActivity.DoubleTapListener doubleTapListener = new MainActivity.DoubleTapListener();
+    private GestureDetector doubleTapDetector;
+    private RemoteServer remoteServer;
+    private Toast statusToast;
+    private String statusText;
+    private String latestDownload;
+//    private final AutomationEngine automation = new AutomationEngine();
+    private long loadStartTime;
+    private Fence loadStartFence;
+    private final AutomationEngine.ViewerContent viewerContent = new AutomationEngine.ViewerContent();
+    private Manipulator manipulator;
+
+    private UiHelper uiHelper;
+    private SwapChain swapChain;
+    private DisplayHelper displayHelper;
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(getContentViewLayoutResId());
-
+        Utils.INSTANCE.init();
         try {
             applicationInfo =
                     getPackageManager().getApplicationInfo(getPackageName(), PackageManager.GET_META_DATA);
@@ -88,8 +142,52 @@ public class MainActivity extends AppCompatActivity {
             Log.e(TAG, "Cannot find application info: " + e);
         }
 
+
         previewDisplayView = new SurfaceView(this);
+        previewDisplayView2 = new SurfaceView(this);
+        uiHelper = new UiHelper(UiHelper.ContextErrorPolicy.DONT_CHECK);
+
+        uiHelper.setRenderCallback(new SurfaceCallback());
+
+        // Make the render target transparent
+        uiHelper.setOpaque(false);
+
+        uiHelper.attachTo(previewDisplayView2);
+
+        choreographer = Choreographer.getInstance();
+        displayHelper = new DisplayHelper(this);
+
+        doubleTapDetector = new GestureDetector(this.getApplicationContext(), doubleTapListener);
+
+        manipulator = new Manipulator.Builder()
+                //.targetPosition(0.0f, 0.0f, -4.0f)
+                //.orbitHomePosition(0f, 0.0f, -1.25f)
+                .build(Manipulator.Mode.ORBIT);
+        modelViewer = new ModelViewer(previewDisplayView2, Engine.create(), new UiHelper(UiHelper.ContextErrorPolicy.DONT_CHECK), manipulator);
+        viewerContent.view = modelViewer.getView();
+        viewerContent.sunlight = modelViewer.getLight();
+        viewerContent.lightManager = modelViewer.getEngine().getLightManager();
+        viewerContent.scene = modelViewer.getScene();
+        viewerContent.renderer = modelViewer.getRenderer();
+
+        Renderer.ClearOptions options = viewerContent.renderer.getClearOptions();
+        options.clear = true;
+        viewerContent.renderer.setClearOptions(options);
+
+        previewDisplayView.setOnTouchListener(new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(View view, MotionEvent motionEvent) {
+                modelViewer.onTouchEvent(motionEvent);
+                doubleTapDetector.onTouchEvent(motionEvent);
+                return true;
+            }
+        });
+
         setupPreviewDisplayView();
+
+        createDefaultRenderables();
+        createIndirectLight();
+
 
         // Initialize asset manager so that MediaPipe native libraries can access the app assets, e.g.,
         // binary graphs.
@@ -144,6 +242,31 @@ public class MainActivity extends AppCompatActivity {
 //        }
     }
 
+    private void createIndirectLight() {
+        Engine engine = modelViewer.getEngine();
+        Scene scene = modelViewer.getScene();
+
+        ByteBuffer buf =  readCompressedAsset("envs/default_env_ibl.ktx");
+        scene.setIndirectLight(  KTXLoader.INSTANCE.createIndirectLight(engine, requireNonNull(buf), new KTXLoader.Options()));
+        scene.getIndirectLight().setIntensity( 30000.0f);
+        viewerContent.indirectLight = modelViewer.getScene().getIndirectLight();
+    }
+
+    private ByteBuffer readCompressedAsset( String assetName)  {
+        InputStream input = null;
+        ByteBuffer bytes = null;
+        try {
+            input = getAssets().open(assetName);
+            bytes = ByteBuffer.allocate(input.available());
+            input.read(bytes.array());
+            return ByteBuffer.wrap(bytes.array());
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return bytes;
+    }
+
+
     private static String getLandmarksDebugString(NormalizedLandmarkList landmarks) {
         int landmarkIndex = 0;
         String landmarksString = "";
@@ -177,6 +300,8 @@ public class MainActivity extends AppCompatActivity {
                         eglManager.getContext(), 2);
         converter.setFlipY(FLIP_FRAMES_VERTICALLY);
         converter.setConsumer(processor);
+        choreographer.postFrameCallback(frameScheduler);
+
         if (PermissionHelper.cameraPermissionsGranted(this)) {
             startCamera();
         }
@@ -187,8 +312,17 @@ public class MainActivity extends AppCompatActivity {
         super.onPause();
         converter.close();
 
+        choreographer.removeFrameCallback(frameScheduler);
+
         // Hide preview display until we re-open the camera again.
         previewDisplayView.setVisibility(View.GONE);
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        choreographer.removeFrameCallback(frameScheduler);
+        remoteServer.close();
     }
 
     @Override
@@ -245,7 +379,10 @@ public class MainActivity extends AppCompatActivity {
     private void setupPreviewDisplayView() {
         previewDisplayView.setVisibility(View.GONE);
         ViewGroup viewGroup = findViewById(R.id.preview_display_layout);
+
         viewGroup.addView(previewDisplayView);
+        viewGroup.addView(previewDisplayView2);
+
 
         previewDisplayView
                 .getHolder()
@@ -267,4 +404,86 @@ public class MainActivity extends AppCompatActivity {
                             }
                         });
     }
+
+    private void createDefaultRenderables() {
+        ByteBuffer buffer;
+        try {
+            InputStream inFile = getAssets().open("models/hoodWithIKFixedCoordinates.glb");
+            int size = inFile.available();
+            buffer = ByteBuffer.allocate(size);
+            inFile.read(buffer.array());
+            ByteBuffer.wrap(buffer.array());
+            modelViewer.loadModelGlb(buffer);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        updateRootTransform();
+    }
+
+
+    private void updateRootTransform() {
+        if (true) {
+            modelViewer.transformToUnitCube(new Float3(0f, 0f, 0));
+            //4modelViewer.getAsset().getAnimator().updateBoneMatrices();
+        } else {
+            modelViewer.clearRootTransform();
+        }
+    }
+
+
+    public final class SurfaceCallback implements UiHelper.RendererCallback{
+
+        @Override
+        public void onNativeWindowChanged(Surface surface) {
+
+            if (swapChain !=null){
+                modelViewer.getEngine().destroySwapChain(swapChain);
+            }
+            swapChain = modelViewer.getEngine().createSwapChain(surface, uiHelper.getSwapChainFlags());
+            displayHelper.attach(modelViewer.getRenderer(), previewDisplayView2.getDisplay());
+
+        }
+
+        @Override
+        public void onDetachedFromSurface() {
+
+            displayHelper.detach();
+            if (swapChain !=null){
+                modelViewer.getEngine().destroySwapChain(swapChain);
+                modelViewer.getEngine().flushAndWait();
+                swapChain = null;
+
+            }
+
+        }
+
+        @Override
+        public void onResized(int width, int height) {
+
+
+        }
+    }
+    public final class FrameCallback implements android.view.Choreographer.FrameCallback {
+        private final long startTime = System.nanoTime();
+
+        public void doFrame(long frameTimeNanos) {
+            choreographer.postFrameCallback(this);
+//            modelViewer.render(frameTimeNanos);
+            if (uiHelper.isReadyToRender()){
+                if (modelViewer.getRenderer().beginFrame(swapChain,frameTimeNanos)){
+                    modelViewer.getRenderer().render(viewerContent.view);
+                    modelViewer.getRenderer().endFrame();
+                }
+            }
+        }
+    }
+
+    public final class DoubleTapListener extends GestureDetector.SimpleOnGestureListener {
+        public boolean onDoubleTap(@Nullable MotionEvent e) {
+            modelViewer.destroyModel();
+            createDefaultRenderables();
+            return super.onDoubleTap(e);
+        }
+    }
+
 }
