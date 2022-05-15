@@ -131,6 +131,7 @@ public class MainActivity extends AppCompatActivity {
 
         /////HERE CODE ADDED
         previewDisplayView2 = new SurfaceView(this);
+        previewDisplayView2.getHolder().setFormat(PixelFormat.TRANSLUCENT);
 
         choreographer = Choreographer.getInstance();
         displayHelper = new DisplayHelper(this);
@@ -385,7 +386,6 @@ public class MainActivity extends AppCompatActivity {
                                 processor.getVideoSurfaceOutput().setSurface(null);
                             }
                         });
-        previewDisplayView2.getHolder().setFormat(PixelFormat.TRANSLUCENT);
     }
 
 
