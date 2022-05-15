@@ -80,7 +80,8 @@ public class MainActivity extends AppCompatActivity {
     // {@link SurfaceTexture} where the camera-preview frames can be accessed.
     private SurfaceTexture previewFrameTexture;
     // {@link SurfaceView} that displays the camera-preview frames processed by a MediaPipe graph.
-    private SurfaceView previewDisplayView,previewDisplayView2;
+    private SurfaceView previewDisplayView;
+    private SurfaceView previewDisplayView2;
     // Creates and manages an {@link EGLContext}.
     private EglManager eglManager;
     // Sends camera-preview frames into a MediaPipe graph for processing, and displays the processed
