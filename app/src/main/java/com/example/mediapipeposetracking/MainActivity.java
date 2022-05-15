@@ -51,11 +51,11 @@ import com.google.mediapipe.framework.PacketGetter;
 import com.google.mediapipe.glutil.EglManager;
 import com.google.protobuf.InvalidProtocolBufferException;
 
-import org.jetbrains.annotations.Nullable;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
+
+import javax.annotation.Nullable;
 
 /**
  * Main activity of MediaPipe example apps.
@@ -67,8 +67,12 @@ public class MainActivity extends AppCompatActivity {
     private static final String OUTPUT_VIDEO_STREAM_NAME = "output_video";
     private static final String OUTPUT_LANDMARKS_STREAM_NAME = "pose_landmarks";
 
-
+    // private static final CameraHelper.CameraFacing CAMERA_FACING = CameraHelper.CameraFacing.FRONT;
     private static final CameraHelper.CameraFacing CAMERA_FACING = CameraHelper.CameraFacing.BACK;
+    // Flips the camera-preview frames vertically before sending them into FrameProcessor to be
+    // processed in a MediaPipe graph, and flips the processed frames back when they are displayed.
+    // This is needed because OpenGL represents images assuming the image origin is at the bottom-left
+    // corner, whereas MediaPipe in general assumes the image origin is at top-left.
     private static final boolean FLIP_FRAMES_VERTICALLY = true;
 
     static {
@@ -97,6 +101,7 @@ public class MainActivity extends AppCompatActivity {
 
     private Choreographer choreographer;
     private final MainActivity.FrameCallback frameScheduler = new MainActivity.FrameCallback();
+    private AutomationEngine automation;
     private ModelViewer modelViewer;
     private final MainActivity.DoubleTapListener doubleTapListener = new MainActivity.DoubleTapListener();
     private GestureDetector doubleTapDetector;
@@ -107,6 +112,8 @@ public class MainActivity extends AppCompatActivity {
     private SwapChain swapChain;
     private DisplayHelper displayHelper;
     private NormalizedLandmarkList landmarks = null;
+
+
     @SuppressLint("ClickableViewAccessibility")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -121,8 +128,9 @@ public class MainActivity extends AppCompatActivity {
         }
 
         previewDisplayView = new SurfaceView(this);
+
+        /////HERE CODE ADDED
         previewDisplayView2 = new SurfaceView(this);
-        previewDisplayView2.getHolder().setFormat(PixelFormat.TRANSLUCENT);
 
         choreographer = Choreographer.getInstance();
         displayHelper = new DisplayHelper(this);
@@ -135,7 +143,6 @@ public class MainActivity extends AppCompatActivity {
                 .build(Manipulator.Mode.ORBIT);
 
 
-
         uiHelper = new UiHelper(UiHelper.ContextErrorPolicy.DONT_CHECK);
 
         uiHelper.setRenderCallback(new SurfaceCallback());
@@ -146,7 +153,7 @@ public class MainActivity extends AppCompatActivity {
         uiHelper.attachTo(previewDisplayView2);
 
 
-        modelViewer = new ModelViewer(previewDisplayView2,Engine.create(),uiHelper,manipulator);
+        modelViewer = new ModelViewer(previewDisplayView2, Engine.create(), uiHelper, manipulator);
         viewerContent.view = modelViewer.getView();
         modelViewer.getView().setBlendMode(com.google.android.filament.View.BlendMode.TRANSLUCENT);
         viewerContent.sunlight = modelViewer.getLight();
@@ -155,29 +162,25 @@ public class MainActivity extends AppCompatActivity {
         viewerContent.renderer = modelViewer.getRenderer();
 
 
-
         Renderer.ClearOptions options = viewerContent.renderer.getClearOptions();
 
         options.clear = true;
         viewerContent.renderer.setClearOptions(options);
 
 
-
-        previewDisplayView.setOnTouchListener(new View.OnTouchListener() {
-            @Override
-            public boolean onTouch(View view, MotionEvent motionEvent) {
-                //modelViewer.onTouchEvent(motionEvent);
-                doubleTapDetector.onTouchEvent(motionEvent);
-                return true;
-            }
+        previewDisplayView.setOnTouchListener((view, motionEvent) -> {
+            //modelViewer.onTouchEvent(motionEvent);
+            doubleTapDetector.onTouchEvent(motionEvent);
+            return true;
         });
-
 
 
         setupPreviewDisplayView();
 
         createDefaultRenderables();
         createIndirectLight();
+
+        // HERE END CODE ADDED
 
 
         // Initialize asset manager so that MediaPipe native libraries can access the app assets, e.g.,
@@ -204,7 +207,7 @@ public class MainActivity extends AppCompatActivity {
                     Log.v(TAG, packet.toString());
                     byte[] landmarksRaw = PacketGetter.getProtoBytes(packet);
                     try {
-                        landmarks = NormalizedLandmarkList.parseFrom(landmarksRaw);
+                        NormalizedLandmarkList landmarks = NormalizedLandmarkList.parseFrom(landmarksRaw);
                         if (landmarks == null) {
                             Log.v(TAG, "[TS:" + packet.getTimestamp() + "] No iris landmarks.");
                             return;
@@ -216,7 +219,7 @@ public class MainActivity extends AppCompatActivity {
                                         + packet.getTimestamp()
                                         + "] #Landmarks for iris: "
                                         + landmarks.getLandmarkCount());
-                        Log.v("@LandM", getLandmarksDebugString(landmarks));
+                        Log.v(TAG, getLandmarksDebugString(landmarks));
                     } catch (InvalidProtocolBufferException e) {
                         Log.e(TAG, "Couldn't Exception received - " + e);
                         return;
@@ -228,13 +231,13 @@ public class MainActivity extends AppCompatActivity {
         Engine engine = modelViewer.getEngine();
         Scene scene = modelViewer.getScene();
 
-        ByteBuffer buf =  readCompressedAsset("envs/default_env_ibl.ktx");
-        scene.setIndirectLight(  KTXLoader.INSTANCE.createIndirectLight(engine, requireNonNull(buf), new KTXLoader.Options()));
-        scene.getIndirectLight().setIntensity( 30000.0f);
+        ByteBuffer buf = readCompressedAsset("envs/default_env_ibl.ktx");
+        scene.setIndirectLight(KTXLoader.INSTANCE.createIndirectLight(engine, requireNonNull(buf), new KTXLoader.Options()));
+        scene.getIndirectLight().setIntensity(30000.0f);
         viewerContent.indirectLight = modelViewer.getScene().getIndirectLight();
     }
 
-    private ByteBuffer readCompressedAsset( String assetName)  {
+    private ByteBuffer readCompressedAsset(String assetName) {
         InputStream input = null;
         ByteBuffer bytes = null;
         try {
@@ -251,12 +254,21 @@ public class MainActivity extends AppCompatActivity {
 
     private static String getLandmarksDebugString(NormalizedLandmarkList landmarks) {
         int landmarkIndex = 0;
-        StringBuilder landmarksString = new StringBuilder();
+        String landmarksString = "";
         for (LandmarkProto.NormalizedLandmark landmark : landmarks.getLandmarkList()) {
-            landmarksString.append("\t\tLandmark[").append(landmarkIndex).append("]: (").append(landmark.getX()).append(", ").append(landmark.getY()).append(", ").append(landmark.getZ()).append(")\n");
+            landmarksString +=
+                    "\t\tLandmark["
+                            + landmarkIndex
+                            + "]: ("
+                            + landmark.getX()
+                            + ", "
+                            + landmark.getY()
+                            + ", "
+                            + landmark.getZ()
+                            + ")\n";
             ++landmarkIndex;
         }
-        return landmarksString.toString();
+        return landmarksString;
     }
 
     // Used to obtain the content view for this application. If you are extending this class, and
@@ -318,7 +330,9 @@ public class MainActivity extends AppCompatActivity {
     public void startCamera() {
         cameraHelper = new CameraXPreviewHelper();
         cameraHelper.setOnCameraStartedListener(
-                this::onCameraStarted);
+                surfaceTexture -> {
+                    onCameraStarted(surfaceTexture);
+                });
         CameraHelper.CameraFacing cameraFacing = CAMERA_FACING;
         cameraHelper.startCamera(
                 this, cameraFacing, /*unusedSurfaceTexture=*/ null, cameraTargetResolution());
@@ -349,8 +363,8 @@ public class MainActivity extends AppCompatActivity {
     private void setupPreviewDisplayView() {
         previewDisplayView.setVisibility(View.GONE);
         ViewGroup viewGroup = findViewById(R.id.preview_display_layout);
-
         viewGroup.addView(previewDisplayView);
+        viewGroup.addView(previewDisplayView2);
 
         previewDisplayView
                 .getHolder()
@@ -372,7 +386,6 @@ public class MainActivity extends AppCompatActivity {
                             }
                         });
         previewDisplayView2.getHolder().setFormat(PixelFormat.TRANSLUCENT);
-        viewGroup.addView(previewDisplayView2);
     }
 
 
@@ -393,20 +406,17 @@ public class MainActivity extends AppCompatActivity {
 
 
     private void updateRootTransform() {
-        if (true) {
-            modelViewer.transformToUnitCube(new Float3(0f, 0f, 0));
-        } else {
-            modelViewer.clearRootTransform();
-        }
+        modelViewer.transformToUnitCube(new Float3(0f, 0f, 0));
+
     }
 
 
-    public final class SurfaceCallback implements UiHelper.RendererCallback{
+    public final class SurfaceCallback implements UiHelper.RendererCallback {
 
         @Override
         public void onNativeWindowChanged(Surface surface) {
 
-            if (swapChain !=null){
+            if (swapChain != null) {
                 modelViewer.getEngine().destroySwapChain(swapChain);
             }
             displayHelper.attach(modelViewer.getRenderer(), previewDisplayView2.getDisplay());
@@ -417,63 +427,47 @@ public class MainActivity extends AppCompatActivity {
         public void onDetachedFromSurface() {
 
             displayHelper.detach();
-            if (swapChain !=null){
+            if (swapChain != null) {
                 modelViewer.getEngine().destroySwapChain(swapChain);
                 modelViewer.getEngine().flushAndWait();
                 swapChain = null;
 
             }
         }
+
         @Override
         public void onResized(int width, int height) {
 
             float zoom = 10f;
-            double aspect = (double) width /(double) height;
+            double aspect = (double) width / (double) height;
             modelViewer.getCamera().setProjection(Camera.Projection.ORTHO,
                     -aspect * zoom, aspect * zoom, -zoom, zoom, 0.0, 100);
 
-            modelViewer.getView().setViewport( new Viewport(0, 0, width, height));
+            modelViewer.getView().setViewport(new Viewport(0, 0, width, height));
         }
     }
+
     public final class FrameCallback implements android.view.Choreographer.FrameCallback {
         private final long startTime = System.nanoTime();
 
         public void doFrame(long frameTimeNanos) {
             choreographer.postFrameCallback(this);
-//            if (uiHelper.isReadyToRender()&& swapChain!= null){
-//                if (modelViewer.getRenderer().beginFrame(swapChain,frameTimeNanos)){
-//                    modelViewer.getRenderer().render(viewerContent.view);
-//                    modelViewer.getRenderer().endFrame();
-//                }
-//           }
 
-            int []ent =  modelViewer.getAsset().getEntities();
+            int[] ent = requireNonNull(modelViewer.getAsset()).getEntities();
 
-
-            Mat4 resTrans = translation(new Float3(0.0f,0.0f,-30f));
-            for (int i = 0; i < 16; i++)
-            {
-                Log.i("#MAT",String.valueOf(i)+" : "+ String.valueOf(resTrans.toFloatArray()[i]));
-            }
-            if(landmarks!= null)
-            {
-                for (int i = 0; i < landmarks.getLandmarkCount(); i ++)
-                {
+            Mat4 resTrans;
+            if (landmarks != null) {
+                for (int i = 0; i < landmarks.getLandmarkCount(); i++) {
                     int neckBoneInstance = modelViewer.getEngine().getTransformManager().getInstance(ent[i]);
 
-                    LandmarkProto.NormalizedLandmark lM =  landmarks.getLandmark(i);
-                    resTrans = translation(new Float3((float)((lM.getX()-0.5)*58),(float)-(lM.getY()-0.5)*(65*1.3f),(float)((lM.getZ())*2)-100));
+                    LandmarkProto.NormalizedLandmark lM = landmarks.getLandmark(i);
+                    resTrans = translation(new Float3((float) ((lM.getX() - 0.5) * 58), (float) -(lM.getY() - 0.5) * (65 * 1.3f), (float) ((lM.getZ()) * 2) - 100));
 
                     modelViewer.getEngine().getTransformManager().setTransform(neckBoneInstance, transpose(resTrans).toFloatArray());
                 }
             }
 
-
-
-
-            modelViewer.getAnimator().updateBoneMatrices();
-
-
+            requireNonNull(modelViewer.getAnimator()).updateBoneMatrices();
             modelViewer.render(frameTimeNanos);
 
         }
