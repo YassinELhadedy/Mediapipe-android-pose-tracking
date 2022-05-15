@@ -208,7 +208,7 @@ public class MainActivity extends AppCompatActivity {
                     Log.v(TAG, packet.toString());
                     byte[] landmarksRaw = PacketGetter.getProtoBytes(packet);
                     try {
-                        NormalizedLandmarkList landmarks = NormalizedLandmarkList.parseFrom(landmarksRaw);
+                         landmarks = NormalizedLandmarkList.parseFrom(landmarksRaw);
                         if (landmarks == null) {
                             Log.v(TAG, "[TS:" + packet.getTimestamp() + "] No iris landmarks.");
                             return;
